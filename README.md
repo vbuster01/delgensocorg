@@ -1,2 +1,2 @@
 # delgensocorg
-All fils create for delgensoc.org
+All files created for delgensoc.org
