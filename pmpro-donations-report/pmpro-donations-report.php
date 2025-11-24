@@ -21,7 +21,7 @@
  * @author Graham Godfrey <gp54g@mac.com>
  * @version 3.0
  * @updated 2025-11-23
- */
+ **/
 
 // Prevent direct access
 if (!defined('ABSPATH')) {
