@@ -1,9 +1,7 @@
-<?php
-
 /**
  * PMPro-Donations-received-displayed-on-reports-page.-v4
  *
- * This plugin will display donations received on the PMPro reports page. It will display total 
+ * This plugin will display donations received on the PMPro reports page. It will display total
  * donations and has filters for month and year. The display can be exported to a CSV file.
  *
  * v2 adds member-level on display and filter options now for fiscal years.
@@ -152,22 +150,6 @@ function site_donations_get_list($month = null, $year = null, $year_type = 'fisc
 }
 
 /**
- * Get the earliest year in which a donation was recorded.
- * Falls back to the current year if no donations exist yet.
- */
-function site_donations_get_earliest_year() {
-    global $wpdb;
-    $earliest = $wpdb->get_var("
-        SELECT YEAR(MIN(o.timestamp))
-        FROM {$wpdb->prefix}pmpro_membership_ordermeta om
-        JOIN {$wpdb->prefix}pmpro_membership_orders o ON om.pmpro_membership_order_id = o.id
-        WHERE om.meta_key = 'donation_amount'
-        AND om.meta_value > 0
-    ");
-    return $earliest ? intval($earliest) : intval(date('Y'));
-}
-
-/**
  * Get list of all users who have made donations
  */
 function site_donations_get_users() {
@@ -295,10 +277,9 @@ function site_donations_page() {
     $donor_users     = site_donations_get_users();
 
     // Current year values
-    $current_month       = intval(date('n'));
-    $current_year        = intval(date('Y'));
+    $current_month      = intval(date('n'));
+    $current_year       = intval(date('Y'));
     $current_fiscal_year = ($current_month >= 7) ? $current_year : $current_year - 1;
-    $earliest_year       = site_donations_get_earliest_year();
 
     ?>
     <h2><?php _e('Total Donations Received', 'pmpro'); ?></h2>
@@ -361,14 +342,14 @@ function site_donations_page() {
             <option value=""><?php _e('All', 'pmpro'); ?></option>
             <?php
             if ($year_type === 'fiscal') {
-                for ($y = $current_fiscal_year; $y >= $earliest_year; $y--) {
+                for ($y = $current_fiscal_year; $y >= 2022; $y--) {
                     $year_label = 'FY ' . $y . '-' . ($y + 1);
                     ?>
                     <option value="<?php echo $y; ?>" <?php selected($year, $y); ?>><?php echo $year_label; ?></option>
                     <?php
                 }
             } else {
-                for ($y = $current_year; $y >= $earliest_year; $y--) {
+                for ($y = $current_year; $y >= 2022; $y--) {
                     ?>
                     <option value="<?php echo $y; ?>" <?php selected($year, $y); ?>><?php echo $y; ?></option>
                     <?php
