@@ -1,10 +1,21 @@
 <?php
+
 /**
+ * PMPro-Donations-received-displayed-on-reports-page.-v4
+ *
+ * This plugin will display donations received on the PMPro reports page. It will display total 
+ * donations and has filters for month and year. The display can be exported to a CSV file.
+ *
+ * v2 adds member-level on display and filter options now for fiscal years.
+ * v3 adds the option to switch between fiscal and calendar years and, if required, sorts by user.
+ * v4 fixes CSRF on CSV export (nonce added), removes duplicate report registration,
+ *    consolidates SQL prepare calls, and uses PMPro currency formatting.
+ *
  * PMPro Donations Reporting
  *
  * Custom donations report for Paid Memberships Pro that displays donation data
  * with advanced filtering and export capabilities.
- * 
+ *
  * Features:
  * - Display total donations received with detailed transaction history
  * - Filter by month and year (Fiscal Year: July-June or Calendar Year: Jan-Dec)
@@ -12,15 +23,15 @@
  * - View member details including membership level
  * - Export filtered results to CSV
  * - Dashboard widget for quick access
- * 
+ *
  * Permissions:
- * Accessible to Administrators and Membership Managers (if using the PMPro 
- * Membership Manager Role Add On). To restrict to Administrators only, remove 
+ * Accessible to Administrators and Membership Managers (if using the PMPro
+ * Membership Manager Role Add On). To restrict to Administrators only, remove
  * the pmpro_memberships_menu capability check from permission checks.
- * 
+ *
  * @author Graham Godfrey <gp54g@mac.com>
- * @version 3.0
- * @updated 2025-11-23
+ * @version 4.0
+ * @updated 2026-03-25
  */
 
 // Prevent direct access
@@ -31,49 +42,57 @@ if (!defined('ABSPATH')) {
 // Function to fetch total donation data
 function site_donations_get_total($month = null, $year = null, $year_type = 'fiscal', $user_email = null) {
     global $wpdb;
-    
+
     $where_conditions = array("om.meta_key = 'donation_amount'", "om.meta_value > 0");
+    $values = array();
     $join_clauses = array();
-    
+
     // Add user email filter if provided
     if (!empty($user_email)) {
         $join_clauses[] = "LEFT JOIN {$wpdb->users} u ON o.user_id = u.ID";
-        $where_conditions[] = $wpdb->prepare("u.user_email = %s", $user_email);
+        $where_conditions[] = "u.user_email = %s";
+        $values[] = $user_email;
     }
-    
-    // Build base query
-    $query = "
-        SELECT SUM(om.meta_value) 
-        FROM {$wpdb->prefix}pmpro_membership_ordermeta om
-        JOIN {$wpdb->prefix}pmpro_membership_orders o ON om.pmpro_membership_order_id = o.id
-    ";
-    
-    // Add joins
-    if (!empty($join_clauses)) {
-        $query .= " " . implode(" ", $join_clauses);
-    }
-    
-    // Add where conditions
-    $query .= " WHERE " . implode(" AND ", $where_conditions);
-    
+
     // Add year filter
     if (!empty($year)) {
         if ($year_type === 'fiscal') {
             $year_start = $year . '-07-01 00:00:00';
-            $year_end = ($year + 1) . '-06-30 23:59:59';
+            $year_end   = ($year + 1) . '-06-30 23:59:59';
         } else {
             $year_start = $year . '-01-01 00:00:00';
-            $year_end = $year . '-12-31 23:59:59';
+            $year_end   = $year . '-12-31 23:59:59';
         }
-        $query .= $wpdb->prepare(" AND o.timestamp >= %s AND o.timestamp <= %s", $year_start, $year_end);
-    }
-    
-    // Add month filter
-    if (!empty($month)) {
-        $query .= $wpdb->prepare(" AND MONTH(o.timestamp) = %d", $month);
+        $where_conditions[] = "o.timestamp >= %s AND o.timestamp <= %s";
+        $values[] = $year_start;
+        $values[] = $year_end;
     }
 
-    $total_donations = $wpdb->get_var($query);
+    // Add month filter
+    if (!empty($month)) {
+        $where_conditions[] = "MONTH(o.timestamp) = %d";
+        $values[] = intval($month);
+    }
+
+    // Build base query
+    $query = "
+        SELECT SUM(om.meta_value)
+        FROM {$wpdb->prefix}pmpro_membership_ordermeta om
+        JOIN {$wpdb->prefix}pmpro_membership_orders o ON om.pmpro_membership_order_id = o.id
+    ";
+
+    if (!empty($join_clauses)) {
+        $query .= ' ' . implode(' ', $join_clauses);
+    }
+
+    $query .= ' WHERE ' . implode(' AND ', $where_conditions);
+
+    // Prepare the full query at once
+    if (!empty($values)) {
+        $query = $wpdb->prepare($query, $values); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    }
+
+    $total_donations = $wpdb->get_var($query); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     return $total_donations ? $total_donations : 0;
 }
 
@@ -82,14 +101,36 @@ function site_donations_get_total($month = null, $year = null, $year_type = 'fis
  */
 function site_donations_get_list($month = null, $year = null, $year_type = 'fiscal', $user_email = null) {
     global $wpdb;
-    
+
     $where_conditions = array("om.meta_key = 'donation_amount'", "om.meta_value > 0");
-    
+    $values = array();
+
     // Add user email filter if provided
     if (!empty($user_email)) {
-        $where_conditions[] = $wpdb->prepare("u.user_email = %s", $user_email);
+        $where_conditions[] = "u.user_email = %s";
+        $values[] = $user_email;
     }
-    
+
+    // Add year filter
+    if (!empty($year)) {
+        if ($year_type === 'fiscal') {
+            $year_start = $year . '-07-01 00:00:00';
+            $year_end   = ($year + 1) . '-06-30 23:59:59';
+        } else {
+            $year_start = $year . '-01-01 00:00:00';
+            $year_end   = $year . '-12-31 23:59:59';
+        }
+        $where_conditions[] = "o.timestamp >= %s AND o.timestamp <= %s";
+        $values[] = $year_start;
+        $values[] = $year_end;
+    }
+
+    // Add month filter
+    if (!empty($month)) {
+        $where_conditions[] = "MONTH(o.timestamp) = %d";
+        $values[] = intval($month);
+    }
+
     $query = "
         SELECT om.meta_value, o.timestamp, o.user_id, u.user_login, u.user_email,
                um1.meta_value as first_name, um2.meta_value as last_name,
@@ -100,28 +141,30 @@ function site_donations_get_list($month = null, $year = null, $year_type = 'fisc
         LEFT JOIN {$wpdb->usermeta} um1 ON u.ID = um1.user_id AND um1.meta_key = 'first_name'
         LEFT JOIN {$wpdb->usermeta} um2 ON u.ID = um2.user_id AND um2.meta_key = 'last_name'
         LEFT JOIN {$wpdb->prefix}pmpro_membership_levels ml ON o.membership_id = ml.id
-        WHERE " . implode(" AND ", $where_conditions);
-    
-    // Add year filter
-    if (!empty($year)) {
-        if ($year_type === 'fiscal') {
-            $year_start = $year . '-07-01 00:00:00';
-            $year_end = ($year + 1) . '-06-30 23:59:59';
-        } else {
-            $year_start = $year . '-01-01 00:00:00';
-            $year_end = $year . '-12-31 23:59:59';
-        }
-        $query .= $wpdb->prepare(" AND o.timestamp >= %s AND o.timestamp <= %s", $year_start, $year_end);
-    }
-    
-    // Add month filter
-    if (!empty($month)) {
-        $query .= $wpdb->prepare(" AND MONTH(o.timestamp) = %d", $month);
+        WHERE " . implode(' AND ', $where_conditions) . "
+        ORDER BY o.timestamp DESC";
+
+    if (!empty($values)) {
+        $query = $wpdb->prepare($query, $values); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
-    $query .= " ORDER BY o.timestamp DESC";
+    return $wpdb->get_results($query); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+}
 
-    return $wpdb->get_results($query);
+/**
+ * Get the earliest year in which a donation was recorded.
+ * Falls back to the current year if no donations exist yet.
+ */
+function site_donations_get_earliest_year() {
+    global $wpdb;
+    $earliest = $wpdb->get_var("
+        SELECT YEAR(MIN(o.timestamp))
+        FROM {$wpdb->prefix}pmpro_membership_ordermeta om
+        JOIN {$wpdb->prefix}pmpro_membership_orders o ON om.pmpro_membership_order_id = o.id
+        WHERE om.meta_key = 'donation_amount'
+        AND om.meta_value > 0
+    ");
+    return $earliest ? intval($earliest) : intval(date('Y'));
 }
 
 /**
@@ -137,18 +180,14 @@ function site_donations_get_users() {
         LEFT JOIN {$wpdb->users} u ON o.user_id = u.ID
         LEFT JOIN {$wpdb->usermeta} um1 ON u.ID = um1.user_id AND um1.meta_key = 'first_name'
         LEFT JOIN {$wpdb->usermeta} um2 ON u.ID = um2.user_id AND um2.meta_key = 'last_name'
-        WHERE om.meta_key = 'donation_amount' 
+        WHERE om.meta_key = 'donation_amount'
         AND om.meta_value > 0
         AND u.user_email IS NOT NULL
         ORDER BY u.user_email ASC
     ";
-    
+
     return $wpdb->get_results($query);
 }
-
-// Add a Custom Report to the Memberships > Reports Screen in Paid Memberships Pro.
-global $pmpro_reports;
-$pmpro_reports['my_donations'] = __('Donations Received', 'pmpro');
 
 /**
  * Handle CSV export of donation data
@@ -157,27 +196,32 @@ function site_donations_csv_export() {
     if (!isset($_GET['report']) || $_GET['report'] != 'my_donations' || !isset($_GET['export']) || $_GET['export'] != 'csv') {
         return;
     }
-    
+
     // Check for proper user permissions
     if (!current_user_can('manage_options') && !current_user_can('pmpro_memberships_menu')) {
         wp_die(__('You do not have sufficient permissions to access this page.', 'pmpro'));
     }
-    
-    $month = isset($_GET['month']) ? intval($_GET['month']) : null;
-    $year = isset($_GET['year']) ? intval($_GET['year']) : null;
-    $year_type = isset($_GET['year_type']) ? sanitize_text_field($_GET['year_type']) : 'fiscal';
+
+    // Verify nonce to prevent CSRF
+    if (!isset($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'pmpro_donations_export')) {
+        wp_die(__('Security check failed.', 'pmpro'));
+    }
+
+    $month      = isset($_GET['month']) ? intval($_GET['month']) : null;
+    $year       = isset($_GET['year']) ? intval($_GET['year']) : null;
+    $year_type  = isset($_GET['year_type']) ? sanitize_text_field($_GET['year_type']) : 'fiscal';
     $user_email = isset($_GET['user_email']) && !empty($_GET['user_email']) ? sanitize_email($_GET['user_email']) : null;
-    
+
     // Get donations data
     $donations = site_donations_get_list($month, $year, $year_type, $user_email);
-    
+
     // Set headers for CSV download
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="pmpro-donations-' . date('Y-m-d') . '.csv"');
-    
+
     // Create output stream
     $output = fopen('php://output', 'w');
-    
+
     // Add CSV headers
     fputcsv($output, array(
         __('Member ID', 'pmpro'),
@@ -187,9 +231,9 @@ function site_donations_csv_export() {
         __('Last Name', 'pmpro'),
         __('Membership Level', 'pmpro'),
         __('Amount', 'pmpro'),
-        __('Date', 'pmpro')
+        __('Date', 'pmpro'),
     ));
-    
+
     // Add data rows
     if (!empty($donations)) {
         foreach ($donations as $donation) {
@@ -201,11 +245,11 @@ function site_donations_csv_export() {
                 $donation->last_name,
                 $donation->membership_level,
                 $donation->meta_value,
-                $donation->timestamp
+                $donation->timestamp,
             ));
         }
     }
-    
+
     fclose($output);
     exit();
 }
@@ -217,7 +261,6 @@ add_action('admin_init', 'site_donations_csv_export');
 function site_donations_widget() {
     ?>
     <span id="pmpro_report_donations" class="pmpro_report-holder">
-        <h2><?php _e('Donations Received', 'pmpro'); ?></h2>
         <p><?php _e('View the total donations received and individual donation entries.', 'pmpro'); ?></p>
         <p class="pmpro_report-button">
             <a class="button button-primary" href="<?php echo admin_url('admin.php?page=pmpro-reports&report=my_donations'); ?>"><?php _e('Details', 'pmpro'); ?></a>
@@ -239,28 +282,30 @@ add_action('pmpro_reports_widget', 'pmpro_report_my_donations_widget');
 function site_donations_page() {
     // Check for proper user permissions
     if (!current_user_can('manage_options') && !current_user_can('pmpro_memberships_menu')) {
-       wp_die(__('You do not have sufficient permissions to access this page.', 'pmpro'));
+        wp_die(__('You do not have sufficient permissions to access this page.', 'pmpro'));
     }
-    
-    $month = isset($_GET['month']) ? intval($_GET['month']) : null;
-    $year = isset($_GET['year']) ? intval($_GET['year']) : null;
-    $year_type = isset($_GET['year_type']) ? sanitize_text_field($_GET['year_type']) : 'fiscal';
+
+    $month      = isset($_GET['month']) ? intval($_GET['month']) : null;
+    $year       = isset($_GET['year']) ? intval($_GET['year']) : null;
+    $year_type  = isset($_GET['year_type']) ? sanitize_text_field($_GET['year_type']) : 'fiscal';
     $user_email = isset($_GET['user_email']) && !empty($_GET['user_email']) ? sanitize_email($_GET['user_email']) : null;
-    
+
     $total_donations = site_donations_get_total($month, $year, $year_type, $user_email);
-    $donations = site_donations_get_list($month, $year, $year_type, $user_email);
-    $donor_users = site_donations_get_users();
-    
-    // Get current year for both types
-    $current_month = intval(date('n'));
-    $current_year = intval(date('Y'));
+    $donations       = site_donations_get_list($month, $year, $year_type, $user_email);
+    $donor_users     = site_donations_get_users();
+
+    // Current year values
+    $current_month       = intval(date('n'));
+    $current_year        = intval(date('Y'));
     $current_fiscal_year = ($current_month >= 7) ? $current_year : $current_year - 1;
+    $earliest_year       = site_donations_get_earliest_year();
+
     ?>
     <h2><?php _e('Total Donations Received', 'pmpro'); ?></h2>
     <form method="get" action="">
         <input type="hidden" name="page" value="pmpro-reports" />
         <input type="hidden" name="report" value="my_donations" />
-        
+
         <p>
             <label><?php _e('Year Type:', 'pmpro'); ?></label><br/>
             <label>
@@ -273,15 +318,15 @@ function site_donations_page() {
                 <?php _e('Calendar Year (January - December)', 'pmpro'); ?>
             </label>
         </p>
-        
+
         <label for="user_email"><?php _e('User Email:', 'pmpro'); ?></label>
         <select name="user_email" id="user_email">
             <option value=""><?php _e('All Users', 'pmpro'); ?></option>
-            <?php 
+            <?php
             if (!empty($donor_users)) {
                 foreach ($donor_users as $donor) {
                     $display_name = esc_html($donor->user_email);
-                    $name_parts = array();
+                    $name_parts   = array();
                     if (!empty($donor->first_name)) {
                         $name_parts[] = $donor->first_name;
                     }
@@ -289,19 +334,18 @@ function site_donations_page() {
                         $name_parts[] = $donor->last_name;
                     }
                     if (!empty($name_parts)) {
-                        $full_name = implode(' ', $name_parts);
-                        $display_name .= ' (' . esc_html($full_name) . ')';
+                        $display_name .= ' (' . esc_html(implode(' ', $name_parts)) . ')';
                     }
                     ?>
                     <option value="<?php echo esc_attr($donor->user_email); ?>" <?php selected($user_email, $donor->user_email); ?>>
                         <?php echo $display_name; ?>
                     </option>
-                <?php 
+                    <?php
                 }
             }
             ?>
         </select>
-        
+
         <label for="month"><?php _e('Month:', 'pmpro'); ?></label>
         <select name="month" id="month">
             <option value=""><?php _e('All', 'pmpro'); ?></option>
@@ -309,45 +353,54 @@ function site_donations_page() {
                 <option value="<?php echo $m; ?>" <?php selected($month, $m); ?>><?php echo date_i18n('F', mktime(0, 0, 0, $m, 10)); ?></option>
             <?php } ?>
         </select>
-        
+
         <label for="year">
             <?php echo ($year_type === 'fiscal') ? __('Fiscal Year:', 'pmpro') : __('Calendar Year:', 'pmpro'); ?>
         </label>
         <select name="year" id="year">
             <option value=""><?php _e('All', 'pmpro'); ?></option>
-            <?php 
+            <?php
             if ($year_type === 'fiscal') {
-                for ($y = $current_fiscal_year; $y >= 2022; $y--) { 
+                for ($y = $current_fiscal_year; $y >= $earliest_year; $y--) {
                     $year_label = 'FY ' . $y . '-' . ($y + 1);
                     ?>
                     <option value="<?php echo $y; ?>" <?php selected($year, $y); ?>><?php echo $year_label; ?></option>
-                <?php }
+                    <?php
+                }
             } else {
-                for ($y = $current_year; $y >= 2022; $y--) { 
+                for ($y = $current_year; $y >= $earliest_year; $y--) {
                     ?>
                     <option value="<?php echo $y; ?>" <?php selected($year, $y); ?>><?php echo $y; ?></option>
-                <?php }
+                    <?php
+                }
             }
             ?>
         </select>
         <input type="submit" value="<?php _e('Filter', 'pmpro'); ?>" class="button" />
     </form>
-    
+
     <p>
-        <?php 
+        <?php
         echo sprintf(
-            __('Total Donations: %s', 'pmpro'), 
-            '<strong>$' . number_format_i18n($total_donations, 2) . '</strong>'
-        ); 
+            __('Total Donations: %s', 'pmpro'),
+            '<strong>' . pmpro_formatPrice($total_donations) . '</strong>'
+        );
         ?>
     </p>
-    
+
     <p>
-        <a href="<?php echo esc_url(add_query_arg(array('export' => 'csv', 'month' => $month, 'year' => $year, 'year_type' => $year_type, 'user_email' => $user_email))); ?>" class="button">
+        <a href="<?php echo esc_url(add_query_arg(array(
+            'export'     => 'csv',
+            'month'      => $month,
+            'year'       => $year,
+            'year_type'  => $year_type,
+            'user_email' => $user_email,
+            '_wpnonce'   => wp_create_nonce('pmpro_donations_export'),
+        ))); ?>" class="button">
             <?php _e('Export to CSV', 'pmpro'); ?>
         </a>
     </p>
-    
+
     <h3><?php _e('Donation Entries (Descending Order):', 'pmpro'); ?></h3>
     <table class="widefat striped">
         <thead>
@@ -362,9 +415,9 @@ function site_donations_page() {
             </tr>
         </thead>
         <tbody>
-            <?php 
+            <?php
             if (!empty($donations)) {
-                foreach ($donations as $donation) { 
+                foreach ($donations as $donation) {
                     $name = trim($donation->first_name . ' ' . $donation->last_name);
                     if (empty($name)) {
                         $name = __('(not set)', 'pmpro');
@@ -377,10 +430,11 @@ function site_donations_page() {
                         <td><?php echo esc_html($donation->user_email); ?></td>
                         <td><?php echo esc_html($name); ?></td>
                         <td><?php echo esc_html($level_name); ?></td>
-                        <td><?php echo '$' . number_format_i18n($donation->meta_value, 2); ?></td>
+                        <td><?php echo pmpro_formatPrice($donation->meta_value); ?></td>
                         <td><?php echo date_i18n(get_option('date_format'), strtotime($donation->timestamp)); ?></td>
                     </tr>
-                <?php }
+                    <?php
+                }
             } else { ?>
                 <tr>
                     <td colspan="7"><?php _e('No donations found for the selected period.', 'pmpro'); ?></td>
@@ -398,8 +452,13 @@ function pmpro_report_my_donations_page() {
     site_donations_page();
 }
 
+// Add a Custom Report to the Memberships > Reports Screen in Paid Memberships Pro.
+// Must be set at the top level (no hook) so PMPro picks it up before it builds the reports menu.
+global $pmpro_reports;
+$pmpro_reports['my_donations'] = __('Donations Received', 'pmpro');
+
 /**
- * Register the new report with PMPro
+ * Also register via filter as a fallback for newer PMPro versions.
  */
 function site_donations_register_report($reports) {
     $reports['my_donations'] = __('Donations Received', 'pmpro');
